@@ -27,20 +27,33 @@ axis equal;
 light;
 lighting phong;
 
-% Simulate and display 2D X-ray projection
+% ---------------------------------------------
+% X-Ray Signal Intensity Control
+% ---------------------------------------------
 energyLevel = 60; % Energy level in keV
-muValues = [0.2, 0.15, 0.1, 0.05]; % Values of mu for layers
-projection2D = generate2DProjectionWithLayers(phantom3D, muValues);
+I0 = 100; % Initial X-ray intensity
+
+% Adjust muValues based on energy level
+if energyLevel < 60
+    muValues = [0.25, 0.18, 0.12, 0.08]; % Higher mu for lower energy
+elseif energyLevel > 80
+    muValues = [0.15, 0.12, 0.08, 0.05]; % Lower mu for higher energy
+else
+    muValues = [0.2, 0.15, 0.1, 0.05]; % Default values
+end
+
+% Simulate and display 2D X-ray projection with SI control
+projection2D = generate2DProjectionWithIntensity(phantom3D, muValues, I0);
 
 figure;
 imagesc(projection2D);
 colormap(gray);
 axis equal tight;
-title(['2D Projection of Multi-Layer Leg Phantom (Energy Level: ', num2str(energyLevel), ' keV)']);
+title(['2D Projection with Intensity I_0 = ', num2str(I0), ' (Energy Level: ', num2str(energyLevel), ' keV)']);
 
 % Simulate orthogonal and angled fractures
-gapSize = 0.05; % Fracture gap size
-simulateFractures(phantom3D, muValues, gapSize);
+gapSize = 0.05;
+simulateAndVisualizeFractures(phantom3D, muValues, gapSize, I0);
 
 % ---------------------------------------------
 % Functions
@@ -60,36 +73,33 @@ function phantom3D = generate3DLegWithLayers(dimX, dimY, dimZ, outerRadiusY, out
     phantom3D = skin + 2 * fat + 3 * muscle + 4 * bone;
 end
 
-% Generate 2D projection from the 3D phantom using mu values from layers
-function projection2D = generate2DProjectionWithLayers(phantom3D, muValues)
+% Generate 2D projection from the 3D phantom with SI control
+function projection2D = generate2DProjectionWithIntensity(phantom3D, muValues, I0)
     projection2D = zeros(size(phantom3D, 1), size(phantom3D, 2));
     for layer = 1:length(muValues)
         attenuation = exp(-muValues(layer) * (phantom3D == layer));
-        projection2D = projection2D + sum(attenuation, 3);
+        projection2D = projection2D + sum(I0 .* attenuation, 3);
     end
 end
 
-% Simulate fractures and generate X-ray projections
-function simulateFractures(phantom3D, muValues, gapSize)
+function simulateAndVisualizeFractures(phantom3D, muValues, gapSize, I0)
     % Orthogonal fracture
     orthogonalPhantom = applyFracture(phantom3D, 90, gapSize);
-    orthogonalProjection = generate2DProjectionWithLayers(orthogonalPhantom, muValues);
+    orthogonalProjection = generate2DProjectionWithIntensity(orthogonalPhantom, muValues, I0);
     figure;
     imagesc(orthogonalProjection);
     colormap(gray);
     axis equal tight;
     title('X-Ray Projection of Leg Phantom with Orthogonal Fracture');
-    save('projection_orthogonal_fracture.mat', 'orthogonalProjection');
 
     % Angled fracture
     angledPhantom = applyFracture(phantom3D, 45, gapSize);
-    angledProjection = generate2DProjectionWithLayers(angledPhantom, muValues);
+    angledProjection = generate2DProjectionWithIntensity(angledPhantom, muValues, I0);
     figure;
     imagesc(angledProjection);
     colormap(gray);
     axis equal tight;
     title('X-Ray Projection of Leg Phantom with Angled Fracture');
-    save('projection_angled_fracture.mat', 'angledProjection');
 end
 
 % Applies fracture to the phantom
@@ -97,27 +107,29 @@ function fracturedPhantom = applyFracture(phantom3D, angle, gapSize)
     % Get phantom dimensions
     [dimX, dimY, dimZ] = size(phantom3D);
 
-    % Create Y and Z grids for fracture calculation
-    [y, z] = ndgrid(1:dimY, 1:dimZ);
+    % Create X and Z grids for fracture calculation
+    [x, z] = ndgrid(1:dimX, 1:dimZ);
 
-    % Center Y and Z coordinates
-    y = y - dimY / 2;
+    % Center X and Z coordinates
+    x = x - dimX / 2;
     z = z - dimZ / 2;
 
     % Define fracture plane
     if angle == 90
-        fracturePlane = abs(y) <= gapSize / 2;
+        % Orthogonal fracture
+        fracturePlane = abs(x) <= gapSize / 2;
     else
-        fracturePlane = abs(y - tan(deg2rad(angle)) * z) <= gapSize / 2;
+        % Angled fracture
+        fracturePlane = abs(x - tan(deg2rad(angle)) * z) <= gapSize / 2;
     end
 
     % Initialize fractured phantom
     fracturedPhantom = phantom3D;
 
-    % Apply the fracture across all X-slices
-    for x = 1:dimX
-        currentSlice = squeeze(fracturedPhantom(x, :, :));
+    % Apply fracture across all Y-slices
+    for y = 1:dimY
+        currentSlice = squeeze(fracturedPhantom(:, y, :));
         currentSlice(fracturePlane) = 0;
-        fracturedPhantom(x, :, :) = currentSlice;
+        fracturedPhantom(:, y, :) = currentSlice;
     end
 end
