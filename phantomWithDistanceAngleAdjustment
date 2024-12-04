@@ -1,0 +1,532 @@
+% Clearing workspace and close figures to avoid overloading session
+close all;
+clc;
+
+% -------------------------------
+% Generate or Load Data
+% -------------------------------
+% We'll generate the phantom3D with the new layers
+disp('Generating 3D phantom leg with skin, fat, muscle, and bone layers...');
+
+% Define dimensions
+dimX = 128; dimY = 128; dimZ = 128;
+outerRadiusY = 0.6; outerRadiusZ = 0.6; % Radii for the outer leg (skin)
+boneRadiusY = 0.2; boneRadiusZ = 0.2;   % Radii for the bone
+length = 1.0; % Length of the leg
+
+% Generate phantom3D with layers
+phantom3D = generate3Dleg(dimX, dimY, dimZ, outerRadiusY, outerRadiusZ, boneRadiusY, boneRadiusZ, length);
+
+% Save the phantom
+save('phantom_and_projection.mat', 'phantom3D');
+
+% -------------------------------
+% Simulate Fractures
+% -------------------------------
+disp('Simulating fractures...');
+
+% Generate fractured phantoms with adjusted gapSize
+gapSize = 1; % Gap size for fractures
+fractureAngle = 45;
+phantom3DNormal = phantom3D; % No fracture
+phantom3DOrthogonal = applyFracture(phantom3D, 0, gapSize); % Orthogonal fracture
+phantom3DAngled = applyFracture(phantom3D, fractureAngle, gapSize); % Angled fracture
+
+skin_mu = 0.015;
+fat_mu = 0.01;
+muscle_mu = 0.02;
+bone_mu = 0.04;
+% Generate 2D projections
+I0 = 1; % Initial X-ray intensity
+muValues = [0.01, 0.015, 0.02, 0.04]; % [Skin, Fat, Muscle, Bone]
+
+projection2DNormal = generate2DProjectionWithIntensity(phantom3DNormal, muValues, I0);
+projection2DOrthogonal = generate2DProjectionWithIntensity(phantom3DOrthogonal, muValues, I0);
+projection2DAngled = generate2DProjectionWithIntensity(phantom3DAngled, muValues, I0);
+
+projection2DNormal = 1 - projection2DNormal;
+projection2DOrthogonal = 1 - projection2DOrthogonal;
+projection2DAngled = 1 - projection2DAngled;
+
+% Apply gamma correction for better visualization
+gamma = 2.5; % Adjust as needed
+projection2DNormal = projection2DNormal.^gamma;
+projection2DOrthogonal = projection2DOrthogonal.^gamma;
+projection2DAngled = projection2DAngled.^gamma;
+
+% Save fractured data for future use
+save('phantom_and_projection.mat', 'phantom3D', 'projection2DNormal', 'projection2DOrthogonal', 'projection2DAngled', '-append');
+disp('Fractures and projections saved.');
+
+% -------------------------------
+% Visualizations
+% -------------------------------
+disp('Visualizing projections...');
+
+% No fracture projection
+figure;
+imagesc(projection2DNormal);
+colormap(gray);
+axis equal tight;
+title('Projection with No Fracture');
+
+% Orthogonal fracture projection
+figure;
+imagesc(projection2DOrthogonal);
+colormap(gray);
+axis equal tight;
+title('Projection with Orthogonal Fracture');
+
+% Angled fracture projection
+figure;
+imagesc(projection2DAngled);
+colormap(gray);
+axis equal tight;
+title('Projection with Angled Fracture');
+
+% -------------------------------
+% Analyze Signal Intensity and Contrast
+% -------------------------------
+disp('Analyzing intensity and contrast...');
+
+% Analyze using the function
+analyze_intensity_and_contrast(projection2DNormal, 'No Fracture');
+analyze_intensity_and_contrast(projection2DOrthogonal, 'Orthogonal Fracture');
+analyze_intensity_and_contrast(projection2DAngled, 'Angled Fracture');
+
+% -------------------------------
+% Signal Intensity Profiles
+% -------------------------------
+disp('Plotting signal intensity profiles...');
+
+% Ensure only valid profiles are plotted
+index = round(size(projection2DNormal, 1) / 2);
+plot_intensity_profile(projection2DNormal, 'row', index, 'No Fracture');
+plot_intensity_profile(projection2DOrthogonal, 'row', index, 'Orthogonal Fracture');
+plot_intensity_profile(projection2DAngled, 'row', index, 'Angled Fracture');
+
+% -------------------------------
+% Function Definitions
+% -------------------------------
+
+% Generate 3D leg phantom with layers
+function phantom3D = generate3Dleg(dimX, dimY, dimZ, outerRadiusY, outerRadiusZ, boneRadiusY, boneRadiusZ, length)
+    % 3D grid of coordinates
+    [x, y, z] = ndgrid(linspace(-1, 1, dimX), linspace(-1, 1, dimY), linspace(-1, 1, dimZ));
+
+    % Thigh (outer cylinder - skin layer)
+    leg = ((y / outerRadiusY).^2 + (z / outerRadiusZ).^2 <= 1) & (abs(x) <= length / 2);
+
+    % Fat layer
+    fatRadiusY = outerRadiusY * 0.8;
+    fatRadiusZ = outerRadiusZ * 0.8;
+    fat = ((y / fatRadiusY).^2 + (z / fatRadiusZ).^2 <= 1) & (abs(x) <= length / 2);
+
+    % Muscle layer
+    muscleRadiusY = fatRadiusY * 0.8;
+    muscleRadiusZ = fatRadiusZ * 0.8;
+    muscle = ((y / muscleRadiusY).^2 + (z / muscleRadiusZ).^2 <= 1) & (abs(x) <= length / 2);
+
+    % Bone (inner cylinder)
+    bone = ((y / boneRadiusY).^2 + (z / boneRadiusZ).^2 <= 1) & (abs(x) <= length / 2);
+
+    % Initialize phantom
+    phantom3D = zeros(dimX, dimY, dimZ);
+
+    % Assign labels (from outer to inner layers)
+    phantom3D(leg) = 1; % Skin
+    phantom3D(fat) = 2; % Fat
+    phantom3D(muscle) = 3; % Muscle
+    phantom3D(bone) = 4; % Bone
+end
+
+% Apply fracture to a phantom
+function fracturedPhantom = applyFracture(phantom3D, angle, gapSize)
+    [dimX, dimY, dimZ] = size(phantom3D);
+
+    % Create a grid for fracture simulation in the x-y plane
+    [xGrid, yGrid] = ndgrid(1:dimX, 1:dimY);
+    x = xGrid - (dimX + 1) / 2;
+    y = yGrid - (dimY + 1) / 2;
+
+    % Define fracture plane in the x-y plane
+    angle_rad = deg2rad(angle);
+    fracturePlane = abs(x * cos(angle_rad) + y * sin(angle_rad)) <= gapSize / 2;
+
+    % Apply fracture only to the bone region (assuming bone is layer 4)
+    boneRegion = (phantom3D == 4);
+    fracturedPhantom = phantom3D;
+
+    for z = 1:dimZ
+        slice = phantom3D(:, :, z); % Get the z-th slice
+        boneSlice = boneRegion(:, :, z); % Identify bone in the slice
+        fractureMask = fracturePlane & boneSlice; % Apply fracture only to bone
+        slice(fractureMask) = 0; % Remove the fractured region
+        fracturedPhantom(:, :, z) = slice; % Update the fractured phantom
+    end
+end
+
+% Generate 2D projection with intensity control
+function projection2D = generate2DProjectionWithIntensity(phantom3D, muValues, I0)
+    mu3D = zeros(size(phantom3D), 'double'); % Use double precision for accuracy
+    for layer = 1:length(muValues)
+        mu3D(phantom3D == layer) = muValues(layer);
+    end
+    % Sum mu over z-direction (depth)
+    total_mu = sum(mu3D, 3);
+    % Calculate projection using the Beer-Lambert law
+    projection2D = I0 * exp(-total_mu);
+end
+
+% Analyze signal intensity and contrast
+function analyze_intensity_and_contrast(projection2D, projectionType)
+    disp(['Analyzing intensity and contrast for ', projectionType, '...']);
+    
+    minIntensity = min(projection2D(:));
+    maxIntensity = max(projection2D(:));
+    disp(['Min projection2D: ', num2str(minIntensity)]);
+    disp(['Max projection2D: ', num2str(maxIntensity)]);
+    
+    % Define thresholds for each layer based on intensity distribution
+    thresholds = linspace(minIntensity, maxIntensity, 5); % 4 intervals for 4 layers
+    
+    % Create masks
+    skinMask = projection2D > thresholds(4);
+    fatMask = (projection2D > thresholds(3)) & (projection2D <= thresholds(4));
+    muscleMask = (projection2D > thresholds(2)) & (projection2D <= thresholds(3));
+    boneMask = projection2D <= thresholds(2);
+    
+    % Extract intensities
+    skinIntensity = projection2D(skinMask);
+    fatIntensity = projection2D(fatMask);
+    muscleIntensity = projection2D(muscleMask);
+    boneIntensity = projection2D(boneMask);
+    
+    % Check for empty masks
+    if isempty(skinIntensity)
+        warning('Skin region is empty.');
+    end
+    if isempty(fatIntensity)
+        warning('Fat region is empty.');
+    end
+    if isempty(muscleIntensity)
+        warning('Muscle region is empty.');
+    end
+    if isempty(boneIntensity)
+        warning('Bone region is empty.');
+    end
+    
+    % Calculate mean intensities
+    meanSkin = mean(skinIntensity);
+    meanFat = mean(fatIntensity);
+    meanMuscle = mean(muscleIntensity);
+    meanBone = mean(boneIntensity);
+    
+    % Calculate contrasts
+    contrastSkinFat = abs(meanSkin - meanFat) / (meanSkin + meanFat);
+    contrastFatMuscle = abs(meanFat - meanMuscle) / (meanFat + meanMuscle);
+    contrastMuscleBone = abs(meanMuscle - meanBone) / (meanMuscle + meanBone);
+    
+    % Display results with projection type
+    fprintf('--- %s ---\n', projectionType);
+    fprintf('Mean Signal Intensity - Skin: %.4f\n', meanSkin);
+    fprintf('Mean Signal Intensity - Fat: %.4f\n', meanFat);
+    fprintf('Mean Signal Intensity - Muscle: %.4f\n', meanMuscle);
+    fprintf('Mean Signal Intensity - Bone: %.4f\n', meanBone);
+    fprintf('Contrast (Skin vs Fat): %.4f\n', contrastSkinFat);
+    fprintf('Contrast (Fat vs Muscle): %.4f\n', contrastFatMuscle);
+    fprintf('Contrast (Muscle vs Bone): %.4f\n', contrastMuscleBone);
+end
+
+
+% Plot intensity profile
+function plot_intensity_profile(projection2D, direction, index, projectionType)
+    % Validate input
+    if isempty(projection2D) || all(projection2D(:) == 0)
+        warning('Invalid projection data. Skipping intensity profile plot.');
+        return;
+    end
+
+    % Extract profile
+    if strcmp(direction, 'row')
+        profile = projection2D(index, :);
+        disp(['Plotting row intensity profile at index: ', num2str(index), ' for ', projectionType]);
+    elseif strcmp(direction, 'column')
+        profile = projection2D(:, index);
+        disp(['Plotting column intensity profile at index: ', num2str(index), ' for ', projectionType]);
+    else
+        error('Invalid direction. Use "row" or "column".');
+    end
+
+    % Debug: Check profile data
+    if all(profile == 0)
+        warning(['Profile data is all zeros for ', projectionType, '. Skipping plot.']);
+        return;
+    end
+
+    % Plot the profile
+    figure;
+    plot(profile);
+    xlabel('Position');
+    ylabel('Signal Intensity');
+    title(['Signal Intensity Profile - ', projectionType], 'Interpreter', 'none');
+end
+
+
+
+
+
+
+
+
+% -------------------------------
+% Adjust Phantom Distances
+% -------------------------------
+
+function zoomedProjection = zoomIntoRegion(projection, sourceToObjectDistance, sourceToImageDistance, roi)
+    % Zoom into a specific region of interest (ROI) to simulate changes in distance.
+    %
+    % Inputs:
+    %   projection - The original 2D projection matrix.
+    %   sourceToObjectDistance - The distance from the source to the object (phantom).
+    %   sourceToImageDistance - The distance from the source to the image receptor.
+    %   roi - Region of interest as [x, y, width, height].
+    %
+    % Outputs:
+    %   zoomedProjection - The projection zoomed into the specified ROI.
+
+    % Calculate the zoom factor based on distances
+    zoomFactor = sourceToImageDistance / sourceToObjectDistance;
+
+    % Crop the region of interest from the original projection
+    croppedProjection = imcrop(projection, roi);
+
+    % Resize the cropped region to simulate zooming
+    zoomedProjection = imresize(croppedProjection, zoomFactor, 'bilinear');
+
+    % Display minimum and maximum values after zooming
+    minValue = min(zoomedProjection(:));
+    maxValue = max(zoomedProjection(:));
+    fprintf('Zoomed Projection Min: %.2f, Max: %.2f\n', minValue, maxValue);
+    [originalRows, originalCols] = size(projection);
+    fprintf('Original Size: %d x %d, Zoomed Size: %d x %d\n', originalRows, originalCols, size(zoomedProjection, 1), size(zoomedProjection, 2));
+end
+
+function zoomedProjection = zoomByObjectToFilmDistance(projection, objectToFilmDistance, roi)
+    % Zoom into a specific region of interest (ROI) based on object to film distance.
+    %
+    % Inputs:
+    %   projection - The original 2D projection matrix.
+    %   objectToFilmDistance - The distance from the object (phantom) to the film.
+    %   roi - Region of interest as [x, y, width, height].
+    %
+    % Outputs:
+    %   zoomedProjection - The projection zoomed into the specified ROI.
+
+    % Calculate the zoom factor
+    zoomFactor = 1 + (objectToFilmDistance / 1000);
+
+    % Crop the region of interest from the original projection
+    croppedProjection = imcrop(projection, roi);
+
+    % Resize the cropped region to simulate zooming
+    zoomedProjection = imresize(croppedProjection, zoomFactor, 'bilinear');
+
+    % Display minimum and maximum values after zooming
+    minValue = min(zoomedProjection(:));
+    maxValue = max(zoomedProjection(:));
+    fprintf('Zoomed Projection (Object-Film Distance) Min: %.2f, Max: %.2f\n', minValue, maxValue);
+end
+
+function zoomedProjection = zoomBySourceToFilmDistance(projection, sourceToFilmDistance, roi)
+    % Zoom into a specific region of interest (ROI) based on source to film distance.
+    %
+    % Inputs:
+    %   projection - The original 2D projection matrix.
+    %   sourceToFilmDistance - The distance from the source to the film.
+    %   roi - Region of interest as [x, y, width, height].
+    %
+    % Outputs:
+    %   zoomedProjection - The projection zoomed into the specified ROI.
+
+    % Calculate the zoom factor
+    zoomFactor = 1 / (1 + (sourceToFilmDistance / 1500));
+
+    % Crop the region of interest from the original projection
+    croppedProjection = imcrop(projection, roi);
+
+    % Resize the cropped region to simulate zooming
+    zoomedProjection = imresize(croppedProjection, zoomFactor, 'bilinear');
+
+    % Display minimum and maximum values after zooming
+    minValue = min(zoomedProjection(:));
+    maxValue = max(zoomedProjection(:));    
+    fprintf('Zoomed Projection (Source-Film Distance) Min: %.2f, Max: %.2f\n', minValue, maxValue);
+end
+
+% -------------------------------
+% Visualization with Phantom Distance Adjustment
+% -------------------------------
+
+% Zoom in to the Phantom Projection by Source to Object Distance
+zoomFactor = sourceToImageDistance / sourceToObjectDistance; % Calculate zoom factor based on distances
+
+% Define a smaller region of interest for zooming
+roi = [30, 30, 60, 60]; % [x, y, width, height] for the region of interest
+zoomedProjectionSOD = zoomIntoRegion(projection2DNormal, sourceToObjectDistance, sourceToImageDistance, roi);
+
+% Zoom in to the Phantom Projection by Oobject to Film Distance
+zoomedProjectionOFD = zoomByObjectToFilmDistance(projection2DNormal, objectToFilmDistance, roi);
+
+% Zoom in to the Phantom Projection by Source to Image Distance
+zoomedProjectionSID = zoomBySourceToFilmDistance(projection2DNormal, sourceToImageDistance, roi);
+
+
+% Print the original and zoomed sizes
+[originalRows, originalCols] = size(projection2DNormal);
+[zoomedRowsSOD, zoomedColsSOD] = size(zoomedProjectionSOD);
+[zoomedRowsOFD, zoomedColsOFD] = size(zoomedProjectionOFD);
+[zoomedRowsSID, zoomedColsSID] = size(zoomedProjectionSID);
+
+fprintf('Original Size: %d x %d\n', originalRows, originalCols);
+fprintf('Zoomed Size (Source to Object Distance): %d x %d\n', zoomedRowsSOD, zoomedColsSOD);
+fprintf('Zoomed Size (Object to Film Distance): %d x %d\n', zoomedRowsOFD, zoomedColsOFD);
+fprintf('Zoomed Size (Source to Film Distance): %d x %d\n', zoomedRowsSID, zoomedColsSID);
+
+% -------------------------------
+% Direct Comparison Between Original and Zoomed Projection
+% -------------------------------
+figure;
+subplot(2, 2, 1);
+imagesc(projection2DNormal);
+colormap(gray);
+axis image;
+title('Original Phantom Projection');
+
+subplot(2, 2, 2);
+imagesc(zoomedProjectionSOD);
+colormap(gray);
+axis image;
+title(sprintf('Zoomed Projection\n(Source to Object Distance, Factor %.2f)', zoomFactor));
+
+subplot(2, 2, 3);
+imagesc(zoomedProjectionOFD);
+colormap(gray);
+axis image;
+title(sprintf('Zoomed Projection\n(Object to Film Distance, Factor %.2f)', zoomFactor));
+
+subplot(2, 2, 4);
+imagesc(zoomedProjectionSID);
+colormap(gray);
+axis image;
+title(sprintf('Zoomed Projection\n(Source to Film Distance, Factor %.2f)', zoomFactor));
+
+
+
+
+
+% -------------------------------
+% Adjust Angle of X-ray Source with 3D Rotation for Foreshortening (Applied to 3D Phantom)
+% -------------------------------
+
+function angledPhantom3D = adjustXraySourceAngle3D(phantom3D, angleDegrees)
+    % Adjust the 3D phantom to simulate the movement of the X-ray source by rotating the phantom.
+    % This creates a foreshortened distortion effect as the source is angled away from directly overhead.
+    %
+    % Inputs:
+    %   phantom3D - The original 3D phantom matrix.
+    %   angleDegrees - The angle by which to tilt the X-ray source in degrees.
+    %
+    % Outputs:
+    %   angledPhantom3D - The 3D phantom after adjusting the X-ray source angle.
+
+    % Convert angle from degrees to radians
+    angleRadians = deg2rad(angleDegrees);
+
+    % Get the size of the original 3D phantom
+    [dimX, dimY, dimZ] = size(phantom3D);
+
+    % Create a 3D grid of coordinates
+    [X, Y, Z] = ndgrid(1:dimX, 1:dimY, 1:dimZ);
+
+    % Define the rotation matrix for tilting about the Y-axis
+    R = [cos(angleRadians), 0, sin(angleRadians); 0, 1, 0; -sin(angleRadians), 0, cos(angleRadians)];
+
+    % Apply the rotation to the coordinates
+    coords = [X(:)'; Y(:)'; Z(:)'];
+    rotatedCoords = R * coords;
+
+    % Extract the rotated coordinates
+    X_rot = reshape(rotatedCoords(1, :), size(X));
+    Y_rot = reshape(rotatedCoords(2, :), size(Y));
+    Z_rot = reshape(rotatedCoords(3, :), size(Z));
+
+    % Add padding to avoid out-of-bounds issues during interpolation
+    padSize = 20;
+    phantom3D_padded = padarray(phantom3D, [padSize, padSize, padSize], 0, 'both');
+
+    % Update the coordinates to match the padded phantom
+    X_rot = X_rot + padSize;
+    Y_rot = Y_rot + padSize;
+    Z_rot = Z_rot + padSize;
+
+    % Interpolate the phantom values at the new rotated coordinates
+    angledPhantom3D = interp3(phantom3D_padded, Y_rot, X_rot, Z_rot, 'linear', 0);
+
+    % Display minimum and maximum values after rotation
+    minValue = min(angledPhantom3D(:));
+    maxValue = max(angledPhantom3D(:));
+    fprintf('Angled Phantom Min: %.2f, Max: %.2f\n', minValue, maxValue);
+end
+
+% -------------------------------
+% Example Visualization with X-ray Source Angle Adjustment for Foreshortening
+% -------------------------------
+
+% X-ray angle at 15 degrees
+angleDegrees = 15; % Tilt angle in degrees
+angledPhantom3D = adjustXraySourceAngle3D(phantom3D, angleDegrees);
+
+% Generate a 2D Projection from the Angled 3D Phantom
+muValues = [0.04, 0.03, 0.015, 0.005]; % [Skin, Fat, Muscle, Bone]
+I0 = 1; % Initial X-ray intensity
+angledProjection2D = generate2DProjectionWithIntensity(angledPhantom3D, muValues, I0);
+
+% Visualize 2D Projection
+figure('Position', [100, 100, 800, 600]);
+imagesc(angledProjection2D);
+colormap(gray);
+axis image;
+title(sprintf('Phantom Projection with Adjusted Angle X-ray Source at %.2f degrees)', angleDegrees), 'FontSize', 12);
+
+% X-ray angle at 30 degrees
+angleDegrees = 30;
+angledPhantom3D = adjustXraySourceAngle3D(phantom3D, angleDegrees);
+
+% Generate a 2D Projection from the Angled 3D Phantom
+muValues = [0.04, 0.03, 0.015, 0.005]; % [Skin, Fat, Muscle, Bone]
+I0 = 1; % Initial X-ray intensity
+angledProjection2D = generate2DProjectionWithIntensity(angledPhantom3D, muValues, I0);
+
+% Visualize 2D Projection
+figure('Position', [100, 100, 800, 600]);
+imagesc(angledProjection2D);
+colormap(gray);
+axis image;
+title(sprintf('Phantom Projection with Adjusted Angle X-ray Source at %.2f degrees)', angleDegrees), 'FontSize', 12);
+
+% X-ray angle at 300 degrees
+angleDegrees = 300; % Tilt angle in degrees
+angledPhantom3D = adjustXraySourceAngle3D(phantom3D, angleDegrees);
+
+% Generate a 2D Projection
+muValues = [0.04, 0.03, 0.015, 0.005]; % [Skin, Fat, Muscle, Bone]
+I0 = 1; % Initial X-ray intensity
+angledProjection2D = generate2DProjectionWithIntensity(angledPhantom3D, muValues, I0);
+
+% Visualize 2D Projection
+figure('Position', [100, 100, 800, 600]);
+imagesc(angledProjection2D);
+colormap(gray);
+axis image;
+title(sprintf('Phantom Projection with Adjusted Angle X-ray Source at %.2f degrees)', angleDegrees), 'FontSize', 12);
